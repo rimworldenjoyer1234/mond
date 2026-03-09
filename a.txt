@@ -1,0 +1,99 @@
+memoria:
+
+
+4KB subsector erase: 0.05 s
+
+32KB subsector erase: 0.1 s
+
+64KB sector erase: 0.15 s
+
+128Mb bulk erase: 38 s 
+
+MT25Q_QLHS_L_128_ABA_0-1287003
+
+Para un chip de 128 Mb = 16 MB, eso da:
+
+con subsectores de 4 KB: 
+16 MB/4 KB=4096
+16MB/4KB=4096 borrados
+
+4096×0.05≈204.8
+4096×0.05≈204.8 s
+
+con subsectores de 32 KB: 
+512×0.1≈51.2
+512×0.1≈51.2 s
+
+con sectores de 64 KB: 
+256×0.15≈38.4
+256×0.15≈38.4 s
+
+con bulk erase: 38 s
+
+
+En el datasheet, 4KB/32KB/sector erase llevan 3 bytes de dirección, mientras que bulk erase no lleva dirección: lanzas un único comando para todo el chip.
+
+En la sección WRITE ENABLE/DISABLE, Micron dice que WRITE ENABLE (06h) pone a 1 el write enable latch bit antes de cada comando PROGRAM, ERASE y WRITE. También dice que, si S# no sube al terminar de latchear el comando, el comando no se ejecuta y el latch de write enable se queda en su valor por defecto, 0.
+Y en la sección ERASE Operations lo deja todavía más claro: antes de cualquier comando ERASE hay que ejecutar WRITE ENABLE para poner ese latch a 1; si no, el dispositivo ignora el comando y no pone bits de error. Además, el borrado es self-timed, con duración tSSE, tSE o tBE según sea subsector, sector o bulk erase.
+
+Así que, visto desde fuera, el ciclo de borrado que sí describe el datasheet es este:
+
+mandar WREN (06h) para activar el WEL;
+
+mandar ERASE (20h/52h, D8h o C7h/60h);
+
+el chip entra en una operación interna y autónoma;
+
+mientras dura, WIP = 1 y el program/erase controller bit del flag status register indica “ocupado”;
+
+al terminar, WIP = 0 y el WEL vuelve a 0, tanto si ha ido bien como si no.
+
+Thought for 48s
+
+al acabar, salga bien o mal.
+si bajas S#, mandas el comando, pero no lo subes bien al final, el comando puede no ejecutarse. El datasheet lo repite varias veces para WREN, PROGRAM y ERASE.
+
+porque hay que reducir los hz
+y porque hay que reducir los hz?
+Thought for 50s
+
+Porque al bajar los Hz aumentas el margen temporal del enlace SPI.
+
+La flash no “entiende comandos” por magia. Tiene que ver, con bastante limpieza:
+
+los bits estables en DQ,
+
+los flancos de CLK,
+
+S# bajando y subiendo en el momento correcto,
+
+y además un número correcto de pulsos de reloj.
+
+En el datasheet, Micron fija tiempos mínimos de entrada y control: tDVCH para setup de datos, tCHDX para hold, varios tiempos de S# respecto al reloj, y un tiempo mínimo de deselección tSHSL2 entre comandos non-READ. También publica una frecuencia máxima teórica para comandos non-READ. Todo eso vale bajo sus condiciones de caracterización, no con pinza, cables largos, conversores de nivel y una placa viva alrededor.
+
+Lo que ocurre a alta frecuencia en un montaje real es esto:
+
+Los flancos dejan de ser “instantáneos”.
+Con cables, pinza SOIC, adaptador 1.8 V y la propia placa, sube la capacitancia y aparecen retardos. El datasheet caracteriza la interfaz con cargas de salida de hasta 30 pF y tiempos de subida/bajada concretos; tu banco real suele ser peor que eso.
+
+Se reduce la ventana útil de muestreo.
+Si el período del reloj es pequeño, una parte creciente de cada bit se la comen:
+
+el retardo del level shifter,
+
+el retardo del cable,
+
+el ringing,
+
+el skew entre CLK, MOSI y CS,
+
+y el tiempo que tarda la señal en cruzar el umbral lógico.
+
+El chip puede no latchear el byte correcto.
+Micron dice explícitamente que para WREN, PROGRAM y ERASE hay que mantener S# a LOW hasta que se haya latcheado el último byte, y luego subirlo a HIGH. Si eso no ocurre bien, el comando no se ejecuta. También dice que mantener el número de clocks como múltiplo exacto de un byte ayuda a reducir efectos de ruido y señales indeseables.
+
+En erase/program esto duele más.
+Antes de borrar hay que mandar WREN, luego el opcode de erase, y el chip solo arranca la operación si todo eso ha entrado bien. Si el WREN no se capturó o el comando quedó mal delimitado por S#, el erase se ignora. El datasheet lo dice de forma directa para ERASE: sin WRITE ENABLE, o si S# no sube correctamente, el comando no se ejecuta.
+
+
+--------------------------------------------------
