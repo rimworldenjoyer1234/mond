@@ -1,0 +1,7 @@
+bg_requested	bg_effective	H_original	H_bitstring	H_min	RCT	APT	Lag	sample_dir	results_dir
+0	0	4.543651	0.594191	4.543651	0	0	0	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-measurements/load_sweep/bg_0/probe	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-analysis-runtime/load_sweep/bg_0/probe
+1	1	4.569486	0.638360	4.569486	0	0	0	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-measurements/load_sweep/bg_1/probe	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-analysis-runtime/load_sweep/bg_1/probe
+2	2	4.416493	0.644197	4.416493	0	0	0	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-measurements/load_sweep/bg_2/probe	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-analysis-runtime/load_sweep/bg_2/probe
+4	4	4.416493	0.634839	4.416493	0	0	0	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-measurements/load_sweep/bg_4/probe	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-analysis-runtime/load_sweep/bg_4/probe
+6	6	4.416482	0.626988	4.416482	0	0	0	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-measurements/load_sweep/bg_6/probe	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-analysis-runtime/load_sweep/bg_6/probe
+8	8	4.562895	0.656712	4.562895	0	0	0	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-measurements/load_sweep/bg_8/probe	/home/yo/Documents/jitterentropy-library/tests/raw-entropy/results-analysis-runtime/load_sweep/bg_8/probe
