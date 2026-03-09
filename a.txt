@@ -248,3 +248,218 @@ stress-ng para el barrido de carga externa
 el compilado habitual de jitterentropy-hashtime
 
 el árbol de validación SP800-90B que ya tienes, porque processdata.sh depende de ea_non_iid y del extractor igual que en el repo original.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Así que el problema está en processdata_concurrency.sh, no en la generación de ruido.
+
+Lo más probable es esto: processdata.sh devuelve código distinto de 0 para alguna instancia y, como el script tiene set -e, aborta en la primera que falle aunque las demás estén bien.
+
+Haz esta sustitución en tests/raw-entropy/validation-runtime/processdata_concurrency.sh:
+
+#!/usr/bin/env bash
+set -uo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROCESSDATA_SH="${PROCESSDATA_SH:-$SCRIPT_DIR/processdata.sh}"
+DATA_ROOT_INPUT="${1:-../results-measurements/concurrency}"
+RESULTS_ROOT_INPUT="${2:-../results-analysis-runtime/concurrency}"
+DATA_ROOT="$(realpath -m "$DATA_ROOT_INPUT")"
+RESULTS_ROOT="$(realpath -m "$RESULTS_ROOT_INPUT")"
+OSR="${OSR:-3}"
+DETAIL_FILE="$RESULTS_ROOT/concurrency_detail.tsv"
+SUMMARY_FILE="$RESULTS_ROOT/concurrency_summary.tsv"
+FAIL_FILE="$RESULTS_ROOT/concurrency_failures.tsv"
+
+mkdir -p "$RESULTS_ROOT"
+THRESHOLD="$(awk -v osr="$OSR" 'BEGIN { printf "%.12f", 1/osr }')"
+
+extract_metric() {
+  local metric_file="$1"
+  awk -F': *' '
+    /^H_original:/ { h_original=$2 }
+    /^H_bitstring:/ { h_bitstring=$2 }
+    /^min\(H_original, 8 X H_bitstring\):/ { minval=$2 }
+    END {
+      printf "%s\t%s\t%s\n", h_original, h_bitstring, minval
+    }
+  ' "$metric_file"
+}
+
+count_health_flags() {
+  local log_file="$1"
+  if [ ! -f "$log_file" ]; then
+    printf '0\t0\t0\n'
+    return 0
+  fi
+  awk '
+    /RCT/ { rct++ }
+    /APT/ { apt++ }
+    /Lag/ { lag++ }
+    END {
+      printf "%d\t%d\t%d\n", rct+0, apt+0, lag+0
+    }
+  ' "$log_file"
+}
+
+median_from_file() {
+  local file="$1"
+  sort -g "$file" | awk '
+    { a[NR]=$1 }
+    END {
+      if (NR == 0) exit 1
+      if (NR % 2 == 1) {
+        printf "%.12f\n", a[(NR+1)/2]
+      } else {
+        printf "%.12f\n", (a[NR/2] + a[NR/2 + 1]) / 2
+      }
+    }
+  '
+}
+
+run_processdata() {
+  local sample_dir="$1"
+  local result_dir="$2"
+  (
+    cd "$SCRIPT_DIR"
+    "$PROCESSDATA_SH" "$sample_dir" "$result_dir" >/dev/null 2>&1
+  )
+}
+
+printf 'parallel_instances\tinstance\tH_original\tH_bitstring\tH_min\tbelow_threshold\tRCT\tAPT\tLag\tsample_dir\tresults_dir\n' > "$DETAIL_FILE"
+printf 'parallel_instances\tinstances_ok\tH_min_mean\tH_min_median\tH_min_min\tbelow_threshold_count\tRCT_total\tAPT_total\tLag_total\tthreshold\n' > "$SUMMARY_FILE"
+printf 'parallel_instances\tinstance\treason\tsample_dir\tresults_dir\n' > "$FAIL_FILE"
+
+shopt -s nullglob
+for p_dir in "$DATA_ROOT"/p_*; do
+  case_name="$(basename "$p_dir")"
+  p_value="${case_name#p_}"
+  case_results_root="$RESULTS_ROOT/$case_name"
+  mkdir -p "$case_results_root"
+
+  tmp_vals="$(mktemp)"
+
+  ok_count=0
+  rct_total=0
+  apt_total=0
+  lag_total=0
+
+  for inst_dir in "$p_dir"/inst_*; do
+    inst_name="$(basename "$inst_dir")"
+    inst_results_dir="$case_results_root/$inst_name"
+    mkdir -p "$inst_results_dir"
+
+    if ! run_processdata "$inst_dir" "$inst_results_dir"; then
+      printf '%s\t%s\tprocessdata_failed\t%s\t%s\n' \
+        "$p_value" "$inst_name" "$inst_dir" "$inst_results_dir" >> "$FAIL_FILE"
+      continue
+    fi
+
+    metric_file="$inst_results_dir/jent-raw-noise-0001.minentropy_FF_8bits.txt"
+    if [ ! -f "$metric_file" ]; then
+      printf '%s\t%s\tmissing_metric_file\t%s\t%s\n' \
+        "$p_value" "$inst_name" "$inst_dir" "$inst_results_dir" >> "$FAIL_FILE"
+      continue
+    fi
+
+    IFS=$'\t' read -r h_original h_bitstring h_min < <(extract_metric "$metric_file")
+
+    if [ -z "$h_min" ]; then
+      printf '%s\t%s\tempty_metric\t%s\t%s\n' \
+        "$p_value" "$inst_name" "$inst_dir" "$inst_results_dir" >> "$FAIL_FILE"
+      continue
+    fi
+
+    IFS=$'\t' read -r rct apt lag < <(count_health_flags "$p_dir/${inst_name}.log")
+
+    below="$(awk -v v="$h_min" -v t="$THRESHOLD" 'BEGIN { print (v+0 < t+0) ? 1 : 0 }')"
+    printf '%s\n' "$h_min" >> "$tmp_vals"
+    ok_count=$(( ok_count + 1 ))
+    rct_total=$(( rct_total + rct ))
+    apt_total=$(( apt_total + apt ))
+    lag_total=$(( lag_total + lag ))
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$p_value" "$inst_name" "$h_original" "$h_bitstring" "$h_min" "$below" \
+      "$rct" "$apt" "$lag" "$inst_dir" "$inst_results_dir" >> "$DETAIL_FILE"
+  done
+
+  if [ "$ok_count" -eq 0 ]; then
+    rm -f "$tmp_vals"
+    continue
+  fi
+
+  mean_hmin="$(awk '{ s += $1 } END { if (NR>0) printf "%.12f", s / NR }' "$tmp_vals")"
+  median_hmin="$(median_from_file "$tmp_vals")"
+  min_hmin="$(sort -g "$tmp_vals" | head -n1)"
+  below_count="$(awk -v t="$THRESHOLD" '$1+0 < t+0 { c++ } END { print c+0 }' "$tmp_vals")"
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$p_value" "$ok_count" "$mean_hmin" "$median_hmin" "$min_hmin" \
+    "$below_count" "$rct_total" "$apt_total" "$lag_total" "$THRESHOLD" >> "$SUMMARY_FILE"
+
+  rm -f "$tmp_vals"
+done
+
+echo "Wrote $DETAIL_FILE"
+echo "Wrote $SUMMARY_FILE"
+echo "Wrote $FAIL_FILE"
+
+Luego ejecuta solo la validación:
+
+cd ~/Documents/jitterentropy-library/tests/raw-entropy/validation-runtime
+./processdata_concurrency.sh \
+  ../results-measurements/concurrency \
+  ../results-analysis-runtime/concurrency
+
+Y revisa si aparece algún fallo:
+
+column -ts $'\t' ../results-analysis-runtime/concurrency/concurrency_failures.tsv | less -S
+
+Si quieres una comprobación rápida antes de tocar nada, ejecuta esto:
+
+cd ~/Documents/jitterentropy-library/tests/raw-entropy/validation-runtime
+
+for d in ../results-measurements/concurrency/p_*/inst_*; do
+  out="../results-analysis-runtime/concurrency_test/$(basename "$(dirname "$d")")/$(basename "$d")"
+  mkdir -p "$out"
+  ./processdata.sh "$d" "$out" >/dev/null 2>&1
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "FAIL rc=$rc : $d"
+  fi
+done
+
+Eso te dirá exactamente qué instancias rompen processdata.sh.
+
+Mi apuesta es que no están fallando muchas; probablemente solo unas pocas en p_16 o p_24. El cambio importante es que
