@@ -97,3 +97,81 @@ Antes de borrar hay que mandar WREN, luego el opcode de erase, y el chip solo ar
 
 
 --------------------------------------------------
+En este contexto, "ponerlo a nivel de kernel" no significa que el CPU cambie de modo ni que aparezca una fuente nueva de aleatoriedad. Significa que el recolector de jitter se ejecuta dentro del kernel, en espacio kernel, en vez de como proceso de usuario. El algoritmo base sigue siendo el mismo: tomar marcas de tiempo de alta resolución, medir las variaciones entre lecturas consecutivas, mezclar esos deltas con un pool interno y aplicar tests de salud. En el PDF de Müller, para Linux en kernel space la obtención del tiempo se hace con random_get_entropy(), y si eso devuelve 0 usa __getnstimeofday() como fallback al mejor clocksource disponible. El propio repositorio sigue describiendo la librería como una fuente de ruido basada en el jitter temporal del CPU y no dependiente del sistema operativo
+
+
+tu proceso o hilo entra en Jitterentropy,
+
+Jitterentropy lee el TSC,
+
+ejecuta su bucle interno, hash, accesos a memoria, tests, etc.,
+
+vuelve a leer el TSC,
+
+calcula el delta.
+
+Ese delta no pertenece a ningún proceso concreto. Refleja todo lo que afectó a ese intervalo de ejecución: estado interno de la CPU, cachés, pipeline, branch predictor, TLB, wait states de memoria, cambios de frecuencia, interrupciones, migraciones del scheduler y carga de otras aplicaciones. El propio documento enumera precisamente esos factores como fuentes de variación temporal. 
+
+CPU-Jitter-NPTRNG
+
+Por eso la forma correcta de decirlo no es "lee el TSC de otros procesos", sino:
+
+lee el contador global/de CPU mientras su propio código corre, y en ese tiempo quedan mezclados los efectos del resto del sistema.
+
+De hecho, Müller también muestra que en user space, si hay muchas aplicaciones ejecutándose, incluido X11, el jitter aumenta respecto a un sistema casi quieto. O sea, otras cargas del sistema influyen en la medición, pero no porque el RNG lea "sus procesos", sino porque alteran cuánto tarda en ejecutarse el código entre dos rdtsc. 
+
+CPU-Jitter-NPTRNG
+
+Y aún más: en las pruebas bare metal sin sistema operativo, sin scheduling ni context switches, sigue habiendo jitter medible. Eso refuerza que la fuente principal no es "leer procesos", sino la propia microarquitectura de la CPU y la memoria.
+
+
+
+A nivel de user space, en la implementación actual de la librería no se “espera” a otros procesos para crear jitter. En x86/x86_64, jent_get_nstime() lee directamente el contador con la instrucción rdtsc. En AArch64 usa el contador del sistema (cntvct_el0), y en otras plataformas puede caer a clock_gettime(CLOCK_REALTIME) o a mecanismos equivalentes como mach_absolute_time(). De hecho, el propio código comenta que en algunos casos usa CLOCK_REALTIME porque de vez en cuando puede recibir algo de variación extra por ajustes de NTP, aunque no depende de eso.
+
+El TSC es el Time Stamp Counter. En la documentación del kernel de Linux para x86 se describe como un contador temporal de 64 bits del procesador, legible con RDTSC o RDTSCP, que se usa como medida de tiempo. También advierte que puede ser problemático como fuente temporal porque es local a la CPU y no siempre está perfectamente sincronizado entre núcleos o sockets. En Linux/x86, random_get_entropy() devuelve rdtsc() cuando el TSC está disponible; si no, usa un fallback.
+https://docs.kernel.org/virt/kvm/x86/timekeeping.html
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+si fuerzo a que entre en fallback? aunque el clocksource sea muy preciso con muchos decimales no es determinista?
+que el clocksource tenga muchos decimales no significa que deje de ser determinista. Resolución y entropía no son lo mismo. Puedes tener una API que te entregue nanosegundos y, aun así, que el comportamiento sea muy predecible si el contador subyacente es estable, emulado o si el entorno ejecuta siempre casi igual. El propio proyecto avisa de que un hipervisor puede emular rdtsc y degradar la entropía, y la librería hace tests de arranque y de salud para comprobar si el sistema realmente ofrece las propiedades necesarias para medir y recolectar entropía; si no, bloquea la salida o considera el sistema no seguro para ese uso.
+
+Si fuerzas el fallback, lo que cambias no es solo "la precisión del reloj", sino también la ruta de código para leerlo. En kernel, si no hay random_get_entropy() utilizable, acaba en ktime_get_ns(), y eso a su vez usa la infraestructura de timekeeping del kernel, que termina leyendo el clocksource activo mediante clock->read(clock). En otras palabras, ya no mides un rdtsc casi directo, sino un camino más largo de timekeeping. Eso puede introducir latencias y variaciones propias del software de timekeeping, pero también puede ser peor si el clocksource activo es basto, sintético o demasiado regular. No se puede asumir a priori que será mejor: hay que medirlo y dejar que los health tests lo validen.
+
+
+
+
+
+
+
+
+esa sha-3 es por algo o solo paja? me refiero a que se deberia sustituir por un xrdbg que es resistente a la cuantica?
+luego tambien pasaba la entropia por un hash no?
+
+
+La SHA-3 dentro de Jitterentropy no es relleno. En el diseño evaluado por Müller, la operación SHA-3 tiene dos funciones reales. La primera es servir como carga de trabajo cuya duración se mide: el documento dice explícitamente que la operación SHA-3 "is considered as a noise source" porque su ejecución contiene variaciones temporales, y que el corazón del generador mide la ejecución de la parte de hash y la de accesos a memoria como una única fuente de ruido. La segunda es actuar como condicionador/mezclador: los deltas de tiempo se van inyectando en un pool de entropía mediante SHA-3, y el propio documento dice que la salida de SHA3-256 es la salida del Jitter RNG.
+
+a entropía pasa por un hash. Más exactamente, no se entregan los deltas crudos del temporizador; se mezclan en un estado hash y lo que sale al caller es la salida condicionada de ese estado. El PDF también lo trata como un "vetted conditioning component" bajo SP800-90B. En la integración actual del kernel Linux, además, la constante visible sigue siendo JENT_CONDITIONING_HASH "sha3-256", y el bucle jent_hash_time() existe precisamente para ejecutar una operación sobre la que hacer la medición temporal. 
