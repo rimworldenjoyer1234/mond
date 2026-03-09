@@ -175,3 +175,76 @@ luego tambien pasaba la entropia por un hash no?
 La SHA-3 dentro de Jitterentropy no es relleno. En el diseño evaluado por Müller, la operación SHA-3 tiene dos funciones reales. La primera es servir como carga de trabajo cuya duración se mide: el documento dice explícitamente que la operación SHA-3 "is considered as a noise source" porque su ejecución contiene variaciones temporales, y que el corazón del generador mide la ejecución de la parte de hash y la de accesos a memoria como una única fuente de ruido. La segunda es actuar como condicionador/mezclador: los deltas de tiempo se van inyectando en un pool de entropía mediante SHA-3, y el propio documento dice que la salida de SHA3-256 es la salida del Jitter RNG.
 
 a entropía pasa por un hash. Más exactamente, no se entregan los deltas crudos del temporizador; se mezclan en un estado hash y lo que sale al caller es la salida condicionada de ese estado. El PDF también lo trata como un "vetted conditioning component" bajo SP800-90B. En la integración actual del kernel Linux, además, la constante visible sigue siendo JENT_CONDITIONING_HASH "sha3-256", y el bucle jent_hash_time() existe precisamente para ejecutar una operación sobre la que hacer la medición temporal. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+La idea sigue la estructura del repo: los scripts de recording_userspace generan ruido crudo y luego los de validation-runtime procesan directorios con jent-raw-noise-0001.data, igual que hacen los scripts oficiales invoke_testing_* + processdata*. Además, el criterio de referencia sigue siendo el del propio proyecto: comparar la entropía estimada por delta con 1/OSR, que por defecto es 1/3.
+
+Te dejo los archivos listos para copiar a tu árbol tests/raw-entropy/:
+
+Scripts sueltos
+
+Tar.gz con todo
+
+Qué incluye:
+
+recording_userspace/invoke_testing_load_sweep.sh
+
+recording_userspace/invoke_testing_concurrency.sh
+
+validation-runtime/processdata_load_sweep.sh
+
+validation-runtime/processdata_concurrency.sh
+
+Qué hace cada uno:
+
+invoke_testing_load_sweep.sh: deja una sonda fija de Jitterentropy y añade carga de fondo con stress-ng; opcionalmente lanza validación al terminar.
+
+invoke_testing_concurrency.sh: barre p = 1, 2, 4, ... instancias simultáneas y luego valida cada una.
+
+processdata_load_sweep.sh: reutiliza processdata.sh por caso y saca load_sweep_summary.tsv.
+
+processdata_concurrency.sh: reutiliza processdata.sh por instancia y saca concurrency_detail.tsv y concurrency_summary.tsv.
+
+Uso típico, una vez copiados en el repo:
+
+cd ~/Documents/jitterentropy-library/tests/raw-entropy/recording_userspace
+
+./invoke_testing_load_sweep.sh
+./invoke_testing_concurrency.sh
+
+Variables útiles:
+
+LOAD_LIST="0 1 2 4 6 8" ./invoke_testing_load_sweep.sh
+P_LIST="1 2 4 6 8 12 16 24" ./invoke_testing_concurrency.sh
+RUN_VALIDATION=0 ./invoke_testing_concurrency.sh
+NUM_EVENTS=250000 ./invoke_testing_concurrency.sh
+OSR=3 ../validation-runtime/processdata_concurrency.sh
+
+Dependencias prácticas:
+
+taskset
+
+stress-ng para el barrido de carga externa
+
+el compilado habitual de jitterentropy-hashtime
+
+el árbol de validación SP800-90B que ya tienes, porque processdata.sh depende de ea_non_iid y del extractor igual que en el repo original.
